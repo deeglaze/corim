@@ -4,9 +4,13 @@
 package corim
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"time"
+
+	cbor "github.com/fxamacker/cbor/v2"
 
 	"github.com/veraison/corim/cots"
 	"github.com/veraison/corim/encoding"
@@ -43,12 +47,12 @@ func NewUnsignedCorim() *UnsignedCorim {
 	return &UnsignedCorim{}
 }
 
-// RegisterExtensions registers a struct as a collections of extensions
+// RegisterExtensions registers a struct as a collection of extensions
 func (o *UnsignedCorim) RegisterExtensions(exts extensions.IExtensionsValue) {
 	o.Extensions.Register(exts)
 }
 
-// GetExtensions returns pervisouosly registered extension
+// GetExtensions returns previously registered collection of extensions
 func (o *UnsignedCorim) GetExtensions() extensions.IExtensionsValue {
 	return o.Extensions.IExtensionsValue
 }
@@ -76,12 +80,14 @@ func (o UnsignedCorim) GetID() string {
 // tags array of the unsigned-corim-map
 func (o *UnsignedCorim) AddComid(c comid.Comid) *UnsignedCorim {
 	if o != nil {
-		if c.Valid() != nil {
+		if err := c.Valid(); err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid comid bro %v", err)
 			return nil
 		}
 
 		comidCBOR, err := c.ToCBOR()
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "Nooo the cbor! %v", err)
 			return nil
 		}
 
@@ -220,6 +226,7 @@ func (o UnsignedCorim) Valid() error {
 		return fmt.Errorf("empty id")
 	}
 
+	// (tags: 1) => [ + concise-tag-type-choice ] => must be non-empty.
 	if len(o.Tags) == 0 {
 		return errors.New("tags validation failed: no tags")
 	}
@@ -281,13 +288,83 @@ func (o *UnsignedCorim) FromJSON(data []byte) error {
 // Tag is either a CBOR-encoded CoMID, CoSWID or CoTS
 type Tag []byte
 
+type unmarshaller interface {
+	// FromCBOR returns an error if the value cannot be populated from the CBOR-encoded
+	// array of bytes.
+	FromCBOR(data []byte) error
+}
+
+type validChoice interface {
+	unmarshaller
+	// Valid returns an error if validation of the ITypeChoiceValue fails,
+	// or nil if it succeeds.
+	Valid() error
+}
+type unwrappableChoice interface {
+	validChoice
+	// Value returns the Golang representation of the chosen data type.
+	Value() any
+}
+
+type tagChoiceFactory func() unwrappableChoice
+
+// vacuousChoice is a simple validChoice with no Validity requirements.
+type vacuousChoice struct {
+	unmarshaller
+}
+
+func (*vacuousChoice) Valid() error { return nil }
+func (v *vacuousChoice) Value() any { return v.unmarshaller }
+
+type wrappedChoice struct {
+	validChoice
+}
+
+func (w *wrappedChoice) Value() any { return w.validChoice }
+
+var conciseTagChoiceMap = map[uint64]tagChoiceFactory{
+	CoswidTagNumber: func() unwrappableChoice { return &vacuousChoice{&swid.SoftwareIdentity{}} },
+	ComidTagNumber:  func() unwrappableChoice { return &wrappedChoice{comid.NewComid()} },
+	CobomTagNumber:  func() unwrappableChoice { return &vacuousChoice{nil} }, // TODO: implement cobom
+}
+
+// FromCBOR returns the Golang value representation of any supported concise-tag-type-choice from the
+// tagged CBOR encoding, or an error.
+func (o Tag) FromCBOR(checkValid bool) (any, error) {
+	d := cbor.NewDecoder(bytes.NewReader([]byte(o)))
+	t := &cbor.RawTag{}
+	if err := d.Decode(t); err != nil {
+		return nil, fmt.Errorf("found non-tag value encoding for concise-tag-type-choice: %v", err)
+	}
+	factory, ok := conciseTagChoiceMap[t.Number]
+	if !ok {
+		return nil, fmt.Errorf("unrecognized concise-tag-type-choice tag number %d", t.Number)
+	}
+	v := factory()
+	if err := v.FromCBOR([]byte(t.Content)); err != nil {
+		str := func() string {
+			alt := &cbor.Tag{}
+			if cbor.NewDecoder(bytes.NewReader([]byte(o))).Decode(alt) != nil {
+				return ""
+			}
+			return fmt.Sprintf("%v", alt.Content)
+		}()
+		return nil, fmt.Errorf("unexpected concise-tag-type-choice value representation (%s): %v", str, err)
+	}
+	if checkValid {
+		return v.Value(), v.Valid()
+	}
+	return v.Value(), nil
+}
+
 func (o Tag) Valid() error {
-	// there is no much we can check here, except making sure that the tag is
+	// there is not much we can check here, except making sure that the tag is
 	// not zero-length
 	if len(o) == 0 {
 		return errors.New("empty tag")
 	}
-	return nil
+	_, err := o.FromCBOR(true)
+	return err
 }
 
 // Locator is the internal representation of the corim-locator-map with CBOR and

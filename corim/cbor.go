@@ -17,11 +17,15 @@ var (
 )
 
 var (
-	CoswidTag = []byte{0xd9, 0x01, 0xf9} // 505()
-	ComidTag  = []byte{0xd9, 0x01, 0xfa} // 506()
+	CoswidTag       = []byte{0xd9, 0x01, 0xf9} // 505()
+	CoswidTagNumber = uint64(505)
+	ComidTag        = []byte{0xd9, 0x01, 0xfa} // 506()
+	ComidTagNumber  = uint64(506)
+	CobomTagNumber  = uint64(508)
 
 	corimTagsMap = map[uint64]interface{}{
-		32: comid.TaggedURI(""),
+		32: comid.TaggedURI(""), // #6.32 is URI, but a CoMID tag is #6.506
+		// entity.go adds a tag for the nil value.
 	}
 )
 
@@ -47,6 +51,12 @@ func initCBOREncMode() (en cbor.EncMode, err error) {
 		IndefLength: cbor.IndefLengthForbidden,
 		TimeTag:     cbor.EncTagRequired,
 	}
+	// deeglaze: The only tags are for nil and URI. What about structural
+	// restrictions on tags in nested structures? getEncodeFunc chooses the
+	// encoding based on reflection. Encoding a struct depends on the _ field's cbor tag.
+	// The tag can mean it's encoded as an array ("toarray"). A struct's field's tags can be
+	// "omitempty", "keyasint", or the name (explicitly the first tag). Reflection can allow
+	// a type to be a cbor.Tag{Number,Content}.
 	return encOpt.EncModeWithTags(corimTags())
 }
 
@@ -55,6 +65,7 @@ func initCBORDecMode() (dm cbor.DecMode, err error) {
 		IndefLength: cbor.IndefLengthForbidden,
 		TimeTag:     cbor.DecTagRequired,
 	}
+	// deeglaze: Any unknown tag gets decoded to a cbor.Tag.
 	return decOpt.DecModeWithTags(corimTags())
 }
 

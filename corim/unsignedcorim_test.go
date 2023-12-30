@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
+	cbor "github.com/fxamacker/cbor/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/veraison/corim/comid"
 	"github.com/veraison/corim/cots"
+	"github.com/veraison/corim/encoding"
 	"github.com/veraison/swid"
 )
 
@@ -204,6 +206,36 @@ func TestUnsignedCorim_Valid_ok(t *testing.T) {
 	err := tv.Valid()
 
 	assert.Nil(t, err)
+}
+
+func TestUnsignedCorim_InvalidCoMID_invalid(t *testing.T) {
+	// minimalist CoMID
+	c := comid.NewComid()
+	c.TagIdentity.TagID = swid.TagID{}
+
+	// Directly serialize through cbor to circumvent the Valid() test
+	// that stops serialization. The unmarshalling errors should be
+	// robust against ill-formed encodings.
+	em, err := cbor.EncOptions{}.EncMode()
+	assert.Nil(t, err)
+
+	badComid, err := encoding.SerializeStructToCBOR(em, c)
+	assert.Nil(t, err)
+
+	tv := NewUnsignedCorim().
+		SetID("invalid.tags.corim").
+		AddDependentRim("http://endorser.example/addon.corim", nil).
+		AddProfile("https://arm.com/psa/iot/2.0.0").
+		SetRimValidity(time.Now().Add(time.Hour), nil).
+		AddEntity("ACME Ltd.", nil, RoleManifestCreator)
+	tv.Tags = append(tv.Tags, append(ComidTag, badComid...))
+
+	require.NotNil(t, tv)
+
+	err = tv.Valid()
+
+	expectedError := "tag-id MUST be []byte or string; got <nil>"
+	assert.ErrorContains(t, err, expectedError)
 }
 
 func TestUnsignedCorim_SetRimValidity_invalid(t *testing.T) {
